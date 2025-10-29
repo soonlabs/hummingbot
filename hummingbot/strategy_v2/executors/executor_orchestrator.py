@@ -21,6 +21,7 @@ from hummingbot.strategy_v2.executors.order_executor.order_executor import Order
 from hummingbot.strategy_v2.executors.position_executor.position_executor import PositionExecutor
 from hummingbot.strategy_v2.executors.twap_executor.twap_executor import TWAPExecutor
 from hummingbot.strategy_v2.executors.xemm_executor.xemm_executor import XEMMExecutor
+from hummingbot.strategy_v2.executors.xemm_perpetual_executor.xemm_perpetual_executor import XEMMPerpetualExecutor
 from hummingbot.strategy_v2.models.executor_actions import (
     CreateExecutorAction,
     ExecutorAction,
@@ -144,6 +145,7 @@ class ExecutorOrchestrator:
         "arbitrage_executor": ArbitrageExecutor,
         "twap_executor": TWAPExecutor,
         "xemm_executor": XEMMExecutor,
+        "xemm_perpetual_executor": XEMMPerpetualExecutor,
         "order_executor": OrderExecutor,
     }
 
