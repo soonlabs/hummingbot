@@ -1,5 +1,5 @@
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import Field, field_validator
 
@@ -10,16 +10,19 @@ from hummingbot.strategy_v2.executors.data_types import ConnectorPair, ExecutorC
 class XEMMPerpetualExecutorConfig(ExecutorConfigBase):
     """
     Configuration for Perpetual Cross-Exchange Market Making Executor
-    
+
     Core Logic:
     1. Place limit orders on Maker side (your perpetual exchange)
     2. Immediately hedge with market orders on Taker side (e.g., Binance) when filled
     3. Opposite direction orders automatically close previous positions
     4. Monitor account-wide leverage ratio with tiered risk control
     """
-    
-    type: str = Field(default="xemm_perpetual_executor", json_schema_extra={"client_data": None})
-    
+
+    type: Literal["xemm_perpetual_executor"] = Field(
+        default="xemm_perpetual_executor",
+        json_schema_extra={"client_data": None},
+    )
+
     # ========== Trading Pair Configuration ==========
     maker_connector_pair: ConnectorPair = Field(
         ...,
@@ -29,7 +32,7 @@ class XEMMPerpetualExecutorConfig(ExecutorConfigBase):
         ...,
         description="Taker side trading pair (hedge exchange, e.g., Binance Perpetual)"
     )
-    
+
     # ========== Order Parameters ==========
     side: TradeType = Field(
         ...,
@@ -55,7 +58,7 @@ class XEMMPerpetualExecutorConfig(ExecutorConfigBase):
         ge=0,
         description="Slippage buffer for Taker hedge orders (0.2% = 0.002)"
     )
-    
+
     # ========== Leverage Configuration ==========
     maker_leverage: int = Field(
         default=10,
@@ -73,7 +76,7 @@ class XEMMPerpetualExecutorConfig(ExecutorConfigBase):
         default=PositionMode.HEDGE,
         description="Position mode (HEDGE=dual direction, ONEWAY=single direction)"
     )
-    
+
     # ========== Order Refresh ==========
     order_refresh_time: float = Field(
         default=10.0,
@@ -85,14 +88,14 @@ class XEMMPerpetualExecutorConfig(ExecutorConfigBase):
         ge=0,
         description="Price change tolerance (0.2% = 0.002) before refreshing order"
     )
-    
+
     # ========== Risk Control (Based on Account-Wide Leverage) ==========
     target_leverage: Decimal = Field(
         default=Decimal("10"),
         gt=0,
         description="Target leverage (actual leverage changes dynamically with positions)"
     )
-    
+
     # Leverage usage ratio thresholds
     leverage_warning_threshold: Decimal = Field(
         default=Decimal("0.60"),
@@ -118,7 +121,7 @@ class XEMMPerpetualExecutorConfig(ExecutorConfigBase):
         le=1,
         description="Leverage emergency threshold (95% -> Level 4 risk control)"
     )
-    
+
     # Risk control action parameters
     order_amount_reduction_step: Decimal = Field(
         default=Decimal("0.5"),
@@ -132,14 +135,14 @@ class XEMMPerpetualExecutorConfig(ExecutorConfigBase):
         le=1,
         description="Emergency position reduction ratio (0.3 = reduce 30% of position)"
     )
-    
+
     # ========== Other Risk Controls ==========
     max_retries: int = Field(
         default=3,
         ge=0,
         description="Maximum retries for failed hedge orders"
     )
-    
+
     # ========== Alert Notifications ==========
     alert_webhook_url: Optional[str] = Field(
         default=None,
@@ -150,7 +153,7 @@ class XEMMPerpetualExecutorConfig(ExecutorConfigBase):
         ge=0,
         description="Alert cooldown period in seconds to avoid spam"
     )
-    
+
     @field_validator('position_mode', mode='before')
     @classmethod
     def validate_position_mode(cls, v):
@@ -162,7 +165,7 @@ class XEMMPerpetualExecutorConfig(ExecutorConfigBase):
             elif v_upper == "ONEWAY":
                 return PositionMode.ONEWAY
         return v
-    
+
     @field_validator('leverage_caution_threshold')
     @classmethod
     def validate_caution_threshold(cls, v, info):
@@ -171,7 +174,7 @@ class XEMMPerpetualExecutorConfig(ExecutorConfigBase):
             if v <= info.data['leverage_warning_threshold']:
                 raise ValueError("leverage_caution_threshold must be greater than leverage_warning_threshold")
         return v
-    
+
     @field_validator('leverage_critical_threshold')
     @classmethod
     def validate_critical_threshold(cls, v, info):
@@ -180,7 +183,7 @@ class XEMMPerpetualExecutorConfig(ExecutorConfigBase):
             if v <= info.data['leverage_caution_threshold']:
                 raise ValueError("leverage_critical_threshold must be greater than leverage_caution_threshold")
         return v
-    
+
     @field_validator('leverage_emergency_threshold')
     @classmethod
     def validate_emergency_threshold(cls, v, info):
@@ -189,7 +192,7 @@ class XEMMPerpetualExecutorConfig(ExecutorConfigBase):
             if v <= info.data['leverage_critical_threshold']:
                 raise ValueError("leverage_emergency_threshold must be greater than leverage_critical_threshold")
         return v
-    
+
     @field_validator('max_profitability')
     @classmethod
     def validate_max_profitability(cls, v, info):
@@ -198,4 +201,3 @@ class XEMMPerpetualExecutorConfig(ExecutorConfigBase):
             if v < info.data['min_profitability']:
                 raise ValueError("max_profitability must be greater than or equal to min_profitability")
         return v
-

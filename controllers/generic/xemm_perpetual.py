@@ -13,7 +13,7 @@ import pandas as pd
 from pydantic import Field, field_validator
 
 from hummingbot.client.ui.interface_utils import format_df_for_printout
-from hummingbot.core.data_type.common import PriceType, TradeType, PositionMode
+from hummingbot.core.data_type.common import PositionMode, TradeType
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.strategy_v2.controllers.controller_base import ControllerBase, ControllerConfigBase
 from hummingbot.strategy_v2.executors.data_types import ConnectorPair
@@ -23,11 +23,11 @@ from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction,
 
 class XEMMPerpetualConfig(ControllerConfigBase):
     """Configuration for XEMM Perpetual Controller"""
-    
+
     controller_name: str = "xemm_perpetual"
     controller_type: str = "generic"
     candles_config: List[CandlesConfig] = []
-    
+
     # ========== Trading Pair Configuration ==========
     maker_connector: str = Field(
         default="binance_perpetual",
@@ -57,7 +57,7 @@ class XEMMPerpetualConfig(ControllerConfigBase):
             "prompt_on_new": True
         }
     )
-    
+
     # ========== Order Parameters ==========
     side: str = Field(
         default="BUY",
@@ -94,7 +94,7 @@ class XEMMPerpetualConfig(ControllerConfigBase):
             "prompt_on_new": False
         }
     )
-    
+
     # ========== Leverage Configuration ==========
     maker_leverage: int = Field(
         default=10,
@@ -117,7 +117,7 @@ class XEMMPerpetualConfig(ControllerConfigBase):
             "prompt_on_new": True
         }
     )
-    
+
     # ========== Order Refresh ==========
     order_refresh_time: float = Field(
         default=10.0,
@@ -133,7 +133,7 @@ class XEMMPerpetualConfig(ControllerConfigBase):
             "prompt_on_new": False
         }
     )
-    
+
     # ========== Risk Control ==========
     target_leverage: Decimal = Field(
         default=Decimal("10"),
@@ -177,7 +177,7 @@ class XEMMPerpetualConfig(ControllerConfigBase):
             "prompt_on_new": False
         }
     )
-    
+
     # ========== Other ==========
     max_retries: int = Field(
         default=3,
@@ -200,7 +200,7 @@ class XEMMPerpetualConfig(ControllerConfigBase):
             "prompt_on_new": False
         }
     )
-    
+
     @field_validator("side", mode="before")
     @classmethod
     def validate_side(cls, v):
@@ -210,7 +210,7 @@ class XEMMPerpetualConfig(ControllerConfigBase):
             if v not in ["BUY", "SELL"]:
                 raise ValueError("Side must be 'BUY' or 'SELL'")
         return v
-    
+
     @field_validator("position_mode", mode="before")
     @classmethod
     def validate_position_mode(cls, v):
@@ -220,56 +220,68 @@ class XEMMPerpetualConfig(ControllerConfigBase):
             if v not in ["HEDGE", "ONEWAY"]:
                 raise ValueError("Position mode must be 'HEDGE' or 'ONEWAY'")
         return v
-    
+
     def update_markets(self, markets: Dict[str, Set[str]]) -> Dict[str, Set[str]]:
         """Register required trading pairs"""
         if self.maker_connector not in markets:
             markets[self.maker_connector] = set()
         markets[self.maker_connector].add(self.maker_trading_pair)
-        
+
         if self.taker_connector not in markets:
             markets[self.taker_connector] = set()
         markets[self.taker_connector].add(self.taker_trading_pair)
-        
+
         return markets
 
 
 class XEMMPerpetual(ControllerBase):
     """
     XEMM Perpetual Controller
-    
+
     Manages XEMMPerpetualExecutor instances for cross-exchange perpetual market making.
     Monitors executors and creates new ones as needed based on configuration.
     """
-    
+
     def __init__(self, config: XEMMPerpetualConfig, *args, **kwargs):
         self.config = config
         super().__init__(config, *args, **kwargs)
-        
+
         # Convert side string to TradeType
         self._trade_side = TradeType.BUY if config.side == "BUY" else TradeType.SELL
-        
+
         # Track active executor
         self._active_executor_id: str = None
-    
+
     async def update_processed_data(self):
         """Update any processed data if needed"""
         pass
-    
+
     def determine_executor_actions(self) -> List[ExecutorAction]:
         """
         Determine what executor actions to take
-        
+
         Creates a new XEMMPerpetualExecutor if there is no active one.
         """
         executor_actions = []
-        
+
         # Check for active executors
         active_executors = self.filter_executors(
             executors=self.executors_info,
             filter_func=lambda e: not e.is_done
         )
-        
+
+        total_executors = len(self.executors_info)
+        done_executors = len([e for e in self.executors_info if e.is_done])
+
+        # Log executor status periodically
+        if int(time.time()) % 30 == 0:  # Every 30 seconds
+            self.logger().info(
+                f"[XEMM Controller {self.config.id}] "
+                f"Total Executors: {total_executors}, "
+                f"Active: {len(active_executors)}, "
+                f"Completed: {done_executors}"
+            )
+
         # If no active executor, create one
         if len(active_executors) == 0:
             executor_config = self._create_executor_config()
@@ -280,19 +292,30 @@ class XEMMPerpetual(ControllerBase):
                 )
             )
             self.logger().info(
-                f"Creating new XEMM Perpetual executor: "
+                f"[XEMM Controller {self.config.id}] Creating new executor: "
                 f"{self.config.maker_connector}/{self.config.maker_trading_pair} -> "
-                f"{self.config.taker_connector}/{self.config.taker_trading_pair}"
+                f"{self.config.taker_connector}/{self.config.taker_trading_pair}, "
+                f"Side: {self.config.side}, Amount: {self.config.order_amount}, "
+                f"Target Profit: {self.config.min_profitability * 100:.2f}%-{self.config.max_profitability * 100:.2f}%"
             )
-        
+        else:
+            # Log info about active executors every 10 seconds
+            if int(time.time()) % 10 == 0:
+                for executor in active_executors:
+                    self.logger().info(
+                        f"[XEMM Controller {self.config.id}] Active Executor {executor.id[:8]}: "
+                        f"Status={executor.status.name}, "
+                        f"Net PnL={executor.net_pnl:.2f}"
+                    )
+
         return executor_actions
-    
+
     def _create_executor_config(self) -> XEMMPerpetualExecutorConfig:
         """Create executor configuration from controller config"""
-        
+
         # Convert position mode string to enum
         position_mode = PositionMode.HEDGE if self.config.position_mode == "HEDGE" else PositionMode.ONEWAY
-        
+
         config = XEMMPerpetualExecutorConfig(
             controller_id=self.config.id,
             timestamp=time.time(),
@@ -324,15 +347,15 @@ class XEMMPerpetual(ControllerBase):
             alert_webhook_url=self.config.alert_webhook_url if self.config.alert_webhook_url else None,
             alert_cooldown=self.config.alert_cooldown,
         )
-        
+
         return config
-    
+
     def to_format_status(self) -> List[str]:
         """Format controller status for display"""
-        
+
         if not self.executors_info:
             return ["No active executors"]
-        
+
         # Gather executor information
         executor_data = []
         for executor_info in self.executors_info:
@@ -350,26 +373,24 @@ class XEMMPerpetual(ControllerBase):
             except Exception as e:
                 self.logger().error(f"Error formatting executor info: {e}")
                 continue
-        
+
         if not executor_data:
             return ["No executor data available"]
-        
+
         df = pd.DataFrame(executor_data)
-        
+
         # Add summary statistics
         summary = [
-            f"\n📊 XEMM Perpetual Controller Status",
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "\n📊 XEMM Perpetual Controller Status",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             f"Maker: {self.config.maker_connector}/{self.config.maker_trading_pair}",
             f"Taker: {self.config.taker_connector}/{self.config.taker_trading_pair}",
             f"Side: {self.config.side}",
             f"Leverage: Maker {self.config.maker_leverage}x, Taker {self.config.taker_leverage}x",
-            f"Target Profit: {self.config.min_profitability*100:.2f}% - {self.config.max_profitability*100:.2f}%",
+            f"Target Profit: {self.config.min_profitability * 100:.2f}% - {self.config.max_profitability * 100:.2f}%",
             f"\nActive Executors: {len([e for e in self.executors_info if not e.is_done])}",
             f"Completed Executors: {len([e for e in self.executors_info if e.is_done])}",
             f"\n{format_df_for_printout(df, table_format='psql')}",
         ]
-        
+
         return summary
-
-
