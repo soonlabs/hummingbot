@@ -44,6 +44,21 @@ class V2WithControllers(StrategyV2Base):
     def on_tick(self):
         super().on_tick()
         if not self._is_stop_triggered:
+            # Log tick activity every 10 seconds
+            if int(self.current_timestamp) % 10 == 0:
+                active_executors = self.filter_executors(
+                    executors=self.get_all_executors(),
+                    filter_func=lambda executor: executor.status == RunnableStatus.RUNNING
+                )
+                self.logger().info(f"[Strategy Tick] Controllers: {len(self.controllers)}, Active Executors: {len(active_executors)}")
+                for controller_id, controller in self.controllers.items():
+                    perf = self.get_performance_report(controller_id)
+                    self.logger().info(
+                        f"[Controller {controller_id}] Status: {controller.status.name}, "
+                        f"PnL: {perf.global_pnl_quote:.2f}, "
+                        f"Active Executors: {len(self.get_executors_by_controller(controller_id))}"
+                    )
+
             self.check_manual_kill_switch()
             self.control_max_drawdown()
             self.send_performance_report()
@@ -62,10 +77,11 @@ class V2WithControllers(StrategyV2Base):
             last_max_pnl = self.max_pnl_by_controller[controller_id]
             if controller_pnl > last_max_pnl:
                 self.max_pnl_by_controller[controller_id] = controller_pnl
+                self.logger().info(f"[Drawdown Check] Controller {controller_id} new max PnL: {controller_pnl:.2f}")
             else:
                 current_drawdown = last_max_pnl - controller_pnl
                 if current_drawdown > self.config.max_controller_drawdown_quote:
-                    self.logger().info(f"Controller {controller_id} reached max drawdown. Stopping the controller.")
+                    self.logger().warning(f"[Drawdown Alert] Controller {controller_id} reached max drawdown: {current_drawdown:.2f} > {self.config.max_controller_drawdown_quote}. Stopping the controller.")
                     controller.stop()
                     executors_order_placed = self.filter_executors(
                         executors=self.get_executors_by_controller(controller_id),
@@ -80,11 +96,13 @@ class V2WithControllers(StrategyV2Base):
         current_global_pnl = sum([self.get_performance_report(controller_id).global_pnl_quote for controller_id in self.controllers.keys()])
         if current_global_pnl > self.max_global_pnl:
             self.max_global_pnl = current_global_pnl
+            if int(self.current_timestamp) % 30 == 0:  # Log every 30 seconds
+                self.logger().info(f"[Global PnL] New max: {self.max_global_pnl:.2f}")
         else:
             current_global_drawdown = self.max_global_pnl - current_global_pnl
             if current_global_drawdown > self.config.max_global_drawdown_quote:
                 self.drawdown_exited_controllers.extend(list(self.controllers.keys()))
-                self.logger().info("Global drawdown reached. Stopping the strategy.")
+                self.logger().warning(f"[Global Drawdown Alert] Reached max drawdown: {current_global_drawdown:.2f} > {self.config.max_global_drawdown_quote}. Stopping the strategy.")
                 self._is_stop_triggered = True
                 HummingbotApplication.main_application().stop()
 
@@ -97,16 +115,17 @@ class V2WithControllers(StrategyV2Base):
     def check_manual_kill_switch(self):
         for controller_id, controller in self.controllers.items():
             if controller.config.manual_kill_switch and controller.status == RunnableStatus.RUNNING:
-                self.logger().info(f"Manual cash out for controller {controller_id}.")
+                self.logger().warning(f"[Manual Kill Switch] Stopping controller {controller_id}.")
                 controller.stop()
                 executors_to_stop = self.get_executors_by_controller(controller_id)
+                self.logger().info(f"[Manual Kill Switch] Stopping {len(executors_to_stop)} executors for controller {controller_id}")
                 self.executor_orchestrator.execute_actions(
                     [StopExecutorAction(executor_id=executor.id,
                                         controller_id=executor.controller_id) for executor in executors_to_stop])
             if not controller.config.manual_kill_switch and controller.status == RunnableStatus.TERMINATED:
                 if controller_id in self.drawdown_exited_controllers:
                     continue
-                self.logger().info(f"Restarting controller {controller_id}.")
+                self.logger().info(f"[Controller Restart] Restarting controller {controller_id}.")
                 controller.start()
 
     def check_executors_status(self):
@@ -133,19 +152,30 @@ class V2WithControllers(StrategyV2Base):
         return []
 
     def apply_initial_setting(self):
+        self.logger().info("[Initial Setup] Applying initial settings...")
         connectors_position_mode = {}
         for controller_id, controller in self.controllers.items():
             self.max_pnl_by_controller[controller_id] = Decimal("0")
             config_dict = controller.config.model_dump()
+            self.logger().info(f"[Initial Setup] Controller {controller_id}: {config_dict.get('connector_name', 'Unknown')} - {config_dict.get('trading_pair', 'Unknown')}")
             if "connector_name" in config_dict:
                 if self.is_perpetual(config_dict["connector_name"]):
                     if "position_mode" in config_dict:
                         connectors_position_mode[config_dict["connector_name"]] = config_dict["position_mode"]
+                        self.logger().info(f"[Initial Setup] Setting position mode for {config_dict['connector_name']}: {config_dict['position_mode']}")
                     if "leverage" in config_dict:
+                        self.logger().info(f"[Initial Setup] Setting leverage for {config_dict['connector_name']} {config_dict['trading_pair']}: {config_dict['leverage']}x")
                         self.connectors[config_dict["connector_name"]].set_leverage(leverage=config_dict["leverage"],
                                                                                     trading_pair=config_dict["trading_pair"])
         for connector_name, position_mode in connectors_position_mode.items():
-            self.connectors[connector_name].set_position_mode(position_mode)
+            connector = self.connectors[connector_name]
+            # Check if already in desired mode to avoid unnecessary API calls
+            if hasattr(connector, 'position_mode') and connector.position_mode == position_mode:
+                self.logger().info(f"[Initial Setup] {connector_name} is already in {position_mode} mode. Skipping.")
+            else:
+                self.logger().info(f"[Initial Setup] Setting {connector_name} position mode to {position_mode}.")
+                connector.set_position_mode(position_mode)
+        self.logger().info("[Initial Setup] Initial settings applied successfully!")
 
     def did_fail_order(self, order_failed_event: MarketOrderFailureEvent):
         """
@@ -160,4 +190,10 @@ class V2WithControllers(StrategyV2Base):
                         if "position_mode" in config_dict:
                             connectors_position_mode[config_dict["connector_name"]] = config_dict["position_mode"]
             for connector_name, position_mode in connectors_position_mode.items():
-                self.connectors[connector_name].set_position_mode(position_mode)
+                connector = self.connectors[connector_name]
+                # Check if already in desired mode before retrying
+                if hasattr(connector, 'position_mode') and connector.position_mode == position_mode:
+                    self.logger().info(f"[Error Recovery] {connector_name} is already in {position_mode} mode.")
+                else:
+                    self.logger().info(f"[Error Recovery] Retrying to set {connector_name} position mode to {position_mode}.")
+                    connector.set_position_mode(position_mode)
