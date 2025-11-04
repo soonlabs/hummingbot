@@ -184,13 +184,10 @@ class XEMMPerpetualExecutor(ExecutorBase):
             risk_level, risk_data = await self.check_account_leverage_risk()
 
             if risk_level != self._current_risk_level:
-                # Risk level changed, send alert
+                # Risk level changed, send alert and handle risk
                 await self._send_risk_alert(risk_level, risk_data)
-                self._current_risk_level = risk_level
-
-            # Handle risk based on level
-            if risk_level > 0:
                 await self.handle_leverage_risk(risk_level, risk_data)
+                self._current_risk_level = risk_level
 
             # ========== Normal Business Logic ==========
             # Only continue placing orders if risk level < 4 (Level 4 = emergency, force reduce positions)
